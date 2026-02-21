@@ -2,11 +2,14 @@
 
 import JSZip, { type JSZipObject } from "jszip";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import { createContact, getContactsByKeys } from "@/app/actions/contacts";
 import { getLastSendStatusForZip } from "@/app/actions/send-logs";
 import type { Contact } from "@/lib/contacts/types";
 
 type ParseSource = "manifest" | "fallback";
+type ReviewFilter = "All" | "Pending" | "Failed" | "Blocked" | "Sent";
+type ReviewStatus = "Pending" | "Blocked" | "Sent" | "Failed";
 
 type ParsedBillRow = {
   account_key: string;
@@ -72,7 +75,9 @@ function getStatusFromEmail(email: string | null): "Pending" | "Blocked" {
 }
 
 function uniqueAccountKeys(keys: string[]): string[] {
-  return Array.from(new Set(keys.map((key) => normalizeAccountKey(key)).filter(Boolean)));
+  return Array.from(
+    new Set(keys.map((key) => normalizeAccountKey(key)).filter(Boolean))
+  );
 }
 
 function mergeRowsWithContacts(
@@ -197,6 +202,34 @@ function toBase64(arrayBuffer: ArrayBuffer): Promise<string> {
   });
 }
 
+function getReviewStatus(
+  row: BillRow,
+  rowSendState: RowSendState,
+  lastLogStatus: LastLogStatus | null
+): ReviewStatus {
+  if (row.status === "Blocked") {
+    return "Blocked";
+  }
+
+  if (rowSendState.send_state === "sent") {
+    return "Sent";
+  }
+
+  if (rowSendState.send_state === "failed") {
+    return "Failed";
+  }
+
+  if (lastLogStatus?.status === "sent") {
+    return "Sent";
+  }
+
+  if (lastLogStatus?.status === "failed") {
+    return "Failed";
+  }
+
+  return "Pending";
+}
+
 export default function UploadSendConsole() {
   const zipRef = useRef<JSZip | null>(null);
   const createdBlobUrlsRef = useRef<string[]>([]);
@@ -220,6 +253,9 @@ export default function UploadSendConsole() {
   const [addContactState, setAddContactState] = useState<AddContactState | null>(
     null
   );
+  const [activeFilter, setActiveFilter] = useState<ReviewFilter>("All");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [showOnlyPending, setShowOnlyPending] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -243,42 +279,95 @@ export default function UploadSendConsole() {
     });
   }, [rows]);
 
-  const pendingCount = useMemo(
-    () => rows.filter((row) => row.status === "Pending").length,
-    [rows]
-  );
-  const blockedCount = useMemo(
-    () => rows.filter((row) => row.status === "Blocked").length,
-    [rows]
-  );
-
-  const sentCount = useMemo(
-    () =>
-      rows.filter((row) => {
-        const state = rowSendStates[getRowId(row)]?.send_state ?? "idle";
-        return state === "sent";
-      }).length,
-    [rows, rowSendStates]
-  );
   const zipFilename = summary?.zipFilename.trim() ?? "";
-  const pendingRows = useMemo(
-    () => rows.filter((row) => row.status === "Pending"),
-    [rows]
-  );
-  const selectedPendingCount = useMemo(
-    () => pendingRows.filter((row) => Boolean(selectedRowIds[getRowId(row)])).length,
-    [pendingRows, selectedRowIds]
-  );
-  const allPendingSelected =
-    pendingRows.length > 0 && selectedPendingCount === pendingRows.length;
-  const somePendingSelected =
-    selectedPendingCount > 0 && selectedPendingCount < pendingRows.length;
+
+  const rowsWithReviewStatus = useMemo(() => {
+    return rows.map((row) => {
+      const rowId = getRowId(row);
+      const rowSendState = rowSendStates[rowId] ?? getDefaultSendState();
+      const lastLogStatus = lastLogStatusByKey[row.account_key] ?? null;
+
+      return {
+        row,
+        rowId,
+        rowSendState,
+        lastLogStatus,
+        reviewStatus: getReviewStatus(row, rowSendState, lastLogStatus)
+      };
+    });
+  }, [rows, rowSendStates, lastLogStatusByKey]);
+
+  const counts = useMemo(() => {
+    const initial = {
+      Pending: 0,
+      Blocked: 0,
+      Sent: 0,
+      Failed: 0
+    } as const;
+
+    return rowsWithReviewStatus.reduce(
+      (acc, item) => {
+        acc[item.reviewStatus] += 1;
+        return acc;
+      },
+      { ...initial }
+    );
+  }, [rowsWithReviewStatus]);
+
+  const selectedPendingCount = useMemo(() => {
+    return rowsWithReviewStatus.filter((item) => {
+      if (!selectedRowIds[item.rowId]) {
+        return false;
+      }
+
+      return item.row.status === "Pending";
+    }).length;
+  }, [rowsWithReviewStatus, selectedRowIds]);
+
+  const visibleRows = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+
+    return rowsWithReviewStatus.filter((item) => {
+      if (showOnlyPending && item.reviewStatus !== "Pending") {
+        return false;
+      }
+
+      if (activeFilter !== "All" && item.reviewStatus !== activeFilter) {
+        return false;
+      }
+
+      if (!normalizedSearch) {
+        return true;
+      }
+
+      return (
+        item.row.account_key.toLowerCase().includes(normalizedSearch) ||
+        (item.row.contact_name ?? "").toLowerCase().includes(normalizedSearch) ||
+        (item.row.contact_email ?? "").toLowerCase().includes(normalizedSearch)
+      );
+    });
+  }, [rowsWithReviewStatus, showOnlyPending, activeFilter, searchTerm]);
+
+  const visiblePendingRows = useMemo(() => {
+    return visibleRows.filter((item) => item.row.status === "Pending");
+  }, [visibleRows]);
+
+  const selectedVisiblePendingCount = useMemo(() => {
+    return visiblePendingRows.filter((item) => Boolean(selectedRowIds[item.rowId])).length;
+  }, [visiblePendingRows, selectedRowIds]);
+
+  const allVisiblePendingSelected =
+    visiblePendingRows.length > 0 &&
+    selectedVisiblePendingCount === visiblePendingRows.length;
+  const someVisiblePendingSelected =
+    selectedVisiblePendingCount > 0 &&
+    selectedVisiblePendingCount < visiblePendingRows.length;
 
   useEffect(() => {
     if (selectAllCheckboxRef.current) {
-      selectAllCheckboxRef.current.indeterminate = somePendingSelected;
+      selectAllCheckboxRef.current.indeterminate = someVisiblePendingSelected;
     }
-  }, [somePendingSelected]);
+  }, [someVisiblePendingSelected]);
 
   async function parseUploadedZip(file: File) {
     setIsParsingZip(true);
@@ -370,9 +459,7 @@ export default function UploadSendConsole() {
         return;
       }
 
-      const accountKeys = uniqueAccountKeys(
-        parsedRows.map((row) => row.account_key)
-      );
+      const accountKeys = uniqueAccountKeys(parsedRows.map((row) => row.account_key));
       const contactsByKey = await getContactsByKeys(accountKeys);
       const latestStatusByKey = await getLastSendStatusForZip(file.name, accountKeys);
       const mergedRows = mergeRowsWithContacts(parsedRows, contactsByKey);
@@ -416,20 +503,12 @@ export default function UploadSendConsole() {
     }));
   }
 
-  function getRowSendState(row: BillRow): RowSendState {
-    return rowSendStates[getRowId(row)] ?? getDefaultSendState();
-  }
-
-  function getLastLogStatusForRow(row: BillRow): LastLogStatus | null {
-    return lastLogStatusByKey[row.account_key] ?? null;
-  }
-
   function shouldSkipRowBecauseSentEarlier(row: BillRow): boolean {
     if (!skipAlreadySent) {
       return false;
     }
 
-    return getLastLogStatusForRow(row)?.status === "sent";
+    return (lastLogStatusByKey[row.account_key]?.status ?? null) === "sent";
   }
 
   function setRowSelected(rowId: string, selected: boolean) {
@@ -447,18 +526,27 @@ export default function UploadSendConsole() {
     });
   }
 
-  function setAllPendingRowsSelected(selected: boolean) {
+  function setAllVisiblePendingRowsSelected(selected: boolean) {
     if (!selected) {
-      setSelectedRowIds({});
+      const visibleIds = new Set(visiblePendingRows.map((item) => item.rowId));
+      setSelectedRowIds((current) => {
+        const next = { ...current };
+        for (const rowId of visibleIds) {
+          delete next[rowId];
+        }
+        return next;
+      });
       return;
     }
 
-    const next: Record<string, boolean> = {};
-    for (const row of pendingRows) {
-      next[getRowId(row)] = true;
-    }
-
-    setSelectedRowIds(next);
+    const visibleIds = visiblePendingRows.map((item) => item.rowId);
+    setSelectedRowIds((current) => {
+      const next = { ...current };
+      for (const rowId of visibleIds) {
+        next[rowId] = true;
+      }
+      return next;
+    });
   }
 
   async function refreshLastLogStatusForKeys(keysToRefresh?: string[]) {
@@ -519,23 +607,6 @@ export default function UploadSendConsole() {
     );
   }
 
-  function refreshContacts(targetAccountKeys?: string[]) {
-    const keysToRefresh = targetAccountKeys?.length
-      ? uniqueAccountKeys(targetAccountKeys)
-      : uniqueAccountKeys(rows.map((row) => row.account_key));
-
-    if (keysToRefresh.length === 0) {
-      return;
-    }
-
-    const keySet = new Set(keysToRefresh);
-    setActionError("");
-
-    startMutation(async () => {
-      await syncContactsForKeys(Array.from(keySet));
-    });
-  }
-
   function openAddContact(accountKey: string) {
     setActionError("");
     setAddContactState({
@@ -577,6 +648,7 @@ export default function UploadSendConsole() {
       }
 
       await syncContactsForKeys([addContactState.account_key]);
+      await refreshLastLogStatusForKeys([addContactState.account_key]);
       setAddContactState(null);
     });
   }
@@ -623,7 +695,11 @@ export default function UploadSendConsole() {
     }
 
     if (!zipFilename) {
-      setRowSendState(rowId, "failed", "ZIP filename is unavailable. Re-upload the file.");
+      setRowSendState(
+        rowId,
+        "failed",
+        "ZIP filename is unavailable. Re-upload the file."
+      );
       return false;
     }
 
@@ -683,7 +759,7 @@ export default function UploadSendConsole() {
     }
   }
 
-  async function sendAllPending() {
+  async function sendPending() {
     if (isSendingAll) {
       return;
     }
@@ -774,8 +850,8 @@ export default function UploadSendConsole() {
         return false;
       }
 
-      const logStatus = getLastLogStatusForRow(row);
-      if (logStatus?.status !== "failed") {
+      const logStatus = lastLogStatusByKey[row.account_key]?.status ?? null;
+      if (logStatus !== "failed") {
         return false;
       }
 
@@ -800,56 +876,18 @@ export default function UploadSendConsole() {
     }
   }
 
-  function renderLastLogBadge(row: BillRow) {
-    const logStatus = getLastLogStatusForRow(row)?.status;
-
-    if (logStatus === "sent") {
-      return <span className="history-badge history-badge-sent">Sent earlier</span>;
-    }
-
-    if (logStatus === "failed") {
-      return <span className="history-badge history-badge-failed">Failed earlier</span>;
-    }
-
-    return null;
-  }
-
-  function renderSendState(row: BillRow) {
-    const sendState = getRowSendState(row);
-
-    if (sendState.send_state === "idle") {
-      return null;
-    }
-
-    const stateClass =
-      sendState.send_state === "sending"
-        ? "send-state-sending"
-        : sendState.send_state === "sent"
-          ? "send-state-sent"
-          : "send-state-failed";
-
-    const stateLabel =
-      sendState.send_state === "sending"
-        ? "Sending..."
-        : sendState.send_state === "sent"
-          ? "Sent ✅"
-          : "Failed ❌";
-
-    return (
-      <div className="send-state-wrap">
-        <span className={`send-state-badge ${stateClass}`}>{stateLabel}</span>
-        {sendState.send_state === "failed" && sendState.send_error ? (
-          <p className="send-state-error">{sendState.send_error}</p>
-        ) : null}
-      </div>
-    );
-  }
+  const hasRows = rows.length > 0;
+  const failedCount = counts.Failed;
 
   return (
-    <section className="upload-panel">
-      <div className="upload-controls">
-        <label className="field-label upload-field">
-          Upload Bills ZIP
+    <section className="upload-flow">
+      <section className="panel-section">
+        <div className="section-headline">
+          <h2 className="section-title">Upload</h2>
+          <p className="section-note">Add one ZIP batch to start review and sending.</p>
+        </div>
+
+        <label className="zip-dropzone">
           <input
             type="file"
             accept=".zip,application/zip"
@@ -862,103 +900,106 @@ export default function UploadSendConsole() {
               void parseUploadedZip(selectedFile);
               event.currentTarget.value = "";
             }}
-            className="text-input"
+            className="zip-input"
             disabled={isParsingZip || isMutating || isSendingAll}
           />
+          <span className="zip-dropzone-title">Drop ZIP here or click to upload</span>
+          <span className="zip-dropzone-subtitle">
+            Accepts one .zip file with bill PDFs and optional manifest.json
+          </span>
         </label>
 
-        <button
-          type="button"
-          className="button button-primary"
-          onClick={() => {
-            void sendAllPending();
-          }}
-          disabled={
-            rows.length === 0 ||
-            !zipFilename ||
-            isParsingZip ||
-            isMutating ||
-            isSendingAll
-          }
-        >
-          {isSendingAll ? "Sending all..." : "Send All Pending"}
-        </button>
+        {isParsingZip ? (
+          <div className="message message-success" role="status">
+            Parsing ZIP...
+          </div>
+        ) : null}
 
-        <button
-          type="button"
-          className="button button-secondary"
-          onClick={() => {
-            void sendSelectedPendingRows();
-          }}
-          disabled={
-            rows.length === 0 ||
-            selectedPendingCount === 0 ||
-            !zipFilename ||
-            isParsingZip ||
-            isMutating ||
-            isSendingAll
-          }
-        >
-          Send Selected
-        </button>
+        {summary ? (
+          <div className="batch-strip">
+            <div className="batch-main">
+              <strong>{summary.zipFilename}</strong>
+              <span>•</span>
+              <span>{summary.rowCount} rows parsed</span>
+            </div>
+            <details className="summary-details">
+              <summary>Details</summary>
+              <div className="summary-details-body">
+                <p>
+                  {summary.source === "manifest"
+                    ? "Using manifest.json"
+                    : "Using filename fallback"}
+                </p>
+                <p>Audit logging: enabled</p>
+              </div>
+            </details>
+          </div>
+        ) : null}
+      </section>
 
-        <button
-          type="button"
-          className="button button-secondary"
-          onClick={() => {
-            void retryAllFailed();
-          }}
-          disabled={rows.length === 0 || !zipFilename || isParsingZip || isMutating || isSendingAll}
-        >
-          Retry All Failed
-        </button>
-
-        <button
-          type="button"
-          className="button button-secondary"
-          onClick={() => refreshContacts()}
-          disabled={rows.length === 0 || isParsingZip || isMutating || isSendingAll}
-        >
-          Refresh contacts
-        </button>
-
-        <label className="send-toggle">
-          <input
-            type="checkbox"
-            checked={skipAlreadySent}
-            onChange={(event) => {
-              setSkipAlreadySent(event.target.checked);
-            }}
-            disabled={isParsingZip || isMutating || isSendingAll}
-          />
-          <span>Skip already sent</span>
-        </label>
-      </div>
-
-      {isParsingZip ? (
-        <div className="message message-success" role="status">
-          Parsing ZIP...
+      <section className="panel-section">
+        <div className="section-headline">
+          <h2 className="section-title">Review</h2>
+          <p className="section-note">Filter rows and verify recipients before sending.</p>
         </div>
-      ) : null}
 
-      {summary ? (
-        <div className="upload-summary">
-          <p>
-            <strong>{summary.zipFilename}</strong>
-          </p>
-          <p>{summary.rowCount} bill rows parsed</p>
-          <p>
-            {summary.source === "manifest"
-              ? "Using manifest.json"
-              : "Using filename fallback"}
-          </p>
-          <p>
-            Pending: {pendingCount} | Blocked: {blockedCount}
-          </p>
-          <p>Sent: {sentCount}</p>
-          <p>Audit logging: enabled</p>
+        {summary ? (
+          <div className="summary-strip">
+            <div className="summary-left">
+              <span className="summary-file">{summary.zipFilename}</span>
+              <span>{summary.rowCount} rows</span>
+            </div>
+            <div className="summary-counts">
+              <span className="count-pill count-pill-pending">Pending {counts.Pending}</span>
+              <span className="count-pill count-pill-blocked">Blocked {counts.Blocked}</span>
+              <span className="count-pill count-pill-sent">Sent {counts.Sent}</span>
+              <span className="count-pill count-pill-failed">Failed {counts.Failed}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state compact-empty">
+            <p>Upload a ZIP to begin.</p>
+          </div>
+        )}
+
+        <div className="review-controls">
+          <div className="review-search-row">
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search account key / name / email"
+              className="text-input"
+              aria-label="Search bill rows"
+            />
+            <div className="review-toggle-group">
+              <label className="pending-toggle">
+                <input
+                  type="checkbox"
+                  checked={showOnlyPending}
+                  onChange={(event) => setShowOnlyPending(event.target.checked)}
+                />
+                <span>Show only pending</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="filter-row" role="tablist" aria-label="Status filter">
+            {(["All", "Pending", "Failed", "Blocked", "Sent"] as const).map(
+              (filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  className={`filter-chip ${activeFilter === filter ? "filter-chip-active" : ""}`}
+                  onClick={() => setActiveFilter(filter)}
+                >
+                  {filter}
+                </button>
+              )
+            )}
+          </div>
         </div>
-      ) : null}
+      </section>
 
       {messages.map((message, index) => (
         <div className="message message-error" role="alert" key={`${message}-${index}`}>
@@ -1056,122 +1097,232 @@ export default function UploadSendConsole() {
         </div>
       ) : null}
 
-      {rows.length > 0 ? (
-        <div className="contacts-table-wrap">
-          <table className="contacts-table">
-            <thead>
-              <tr>
-                <th className="select-col">
-                  <input
-                    ref={selectAllCheckboxRef}
-                    type="checkbox"
-                    checked={allPendingSelected}
-                    onChange={(event) => {
-                      setAllPendingRowsSelected(event.target.checked);
-                    }}
-                    aria-label="Select all pending rows"
-                    disabled={pendingRows.length === 0 || isParsingZip || isMutating || isSendingAll}
-                  />
-                </th>
-                <th>Account Key</th>
-                <th>Name</th>
-                <th>Email</th>
-                <th>PDF</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const rowId = getRowId(row);
-                const isRowSelected = Boolean(selectedRowIds[rowId]);
+      {hasRows ? (
+        <div className="table-zone">
+          {counts.Blocked > 0 ? (
+            <div className="blocked-banner">
+              <span>
+                {counts.Blocked} blocked {"\u2014"} add contacts to enable sending.
+              </span>
+              <Link className="button button-secondary button-sm" href="/contacts">
+                Go to Contacts
+              </Link>
+            </div>
+          ) : null}
 
-                return (
-                  <tr key={rowId}>
-                    <td className="select-col">
-                      <input
-                        type="checkbox"
-                        checked={isRowSelected}
-                        onChange={(event) => {
-                          setRowSelected(rowId, event.target.checked);
-                        }}
-                        aria-label={`Select ${row.account_key}`}
-                        disabled={
-                          row.status === "Blocked" || isParsingZip || isMutating || isSendingAll
-                        }
-                      />
-                    </td>
-                    <td>{row.account_key}</td>
-                    <td>{row.contact_name ?? "—"}</td>
-                    <td>{row.contact_email ?? "—"}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="button button-secondary"
-                        onClick={() => {
-                          void handleViewPdf(row);
-                        }}
-                        disabled={isParsingZip || isMutating || isSendingAll}
-                      >
-                        View
-                      </button>
-                    </td>
-                    <td>
-                      <div className="status-cell">
-                        <span
-                          className={`status-pill ${
-                            row.status === "Pending" ? "status-pending" : "status-blocked"
-                          }`}
-                        >
-                          {row.status}
-                        </span>
-                        {renderLastLogBadge(row)}
-                      </div>
-                    </td>
-                    <td>
-                      {row.status === "Pending" ? (
-                        <div>
-                          <button
-                            type="button"
-                            className="button button-secondary"
-                            onClick={() => {
-                              void sendEmailForRow(row);
-                            }}
-                            disabled={
-                              !zipFilename ||
-                              isParsingZip ||
-                              isMutating ||
-                              isSendingAll ||
-                              getRowSendState(row).send_state === "sending" ||
-                              getRowSendState(row).send_state === "sent"
-                            }
-                          >
-                            {getRowSendState(row).send_state === "failed"
-                              ? "Retry"
-                              : getRowSendState(row).send_state === "sending"
-                                ? "Sending..."
-                                : getRowSendState(row).send_state === "sent"
-                                  ? "Sent"
-                                  : "Send Email"}
-                          </button>
-                          {renderSendState(row)}
-                        </div>
-                      ) : (
+          <div className="console-action-bar">
+            <div className="action-bar-left">
+              {selectedPendingCount > 0 ? (
+                <span className="action-selection">Selected: {selectedPendingCount}</span>
+              ) : (
+                <span className="action-selection-muted">Select rows to send only those recipients.</span>
+              )}
+              <label className="pending-toggle">
+                <input
+                  type="checkbox"
+                  checked={skipAlreadySent}
+                  onChange={(event) => setSkipAlreadySent(event.target.checked)}
+                  disabled={isParsingZip || isMutating || isSendingAll}
+                />
+                <span>Skip already sent</span>
+              </label>
+            </div>
+
+            <div className="action-bar-right">
+              {counts.Pending > 0 ? (
+                <button
+                  type="button"
+                  className="button button-primary button-sm"
+                  onClick={() => {
+                    void sendPending();
+                  }}
+                  disabled={!hasRows || !zipFilename || isParsingZip || isMutating || isSendingAll}
+                >
+                  {isSendingAll ? "Sending..." : "Send pending"}
+                </button>
+              ) : null}
+
+              {failedCount > 0 ? (
+                <button
+                  type="button"
+                  className="button button-secondary button-sm"
+                  onClick={() => {
+                    void retryAllFailed();
+                  }}
+                  disabled={!hasRows || !zipFilename || isParsingZip || isMutating || isSendingAll}
+                >
+                  Retry failed
+                </button>
+              ) : null}
+
+              {selectedPendingCount > 0 ? (
+                <button
+                  type="button"
+                  className="button button-secondary button-sm"
+                  onClick={() => {
+                    void sendSelectedPendingRows();
+                  }}
+                  disabled={
+                    !hasRows ||
+                    !zipFilename ||
+                    isParsingZip ||
+                    isMutating ||
+                    isSendingAll
+                  }
+                >
+                  Send selected
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="contacts-table-wrap upload-table-wrap">
+            <table className="contacts-table upload-table">
+              <thead>
+                <tr>
+                  <th className="select-col">
+                    <input
+                      ref={selectAllCheckboxRef}
+                      type="checkbox"
+                      checked={allVisiblePendingSelected}
+                      onChange={(event) => {
+                        setAllVisiblePendingRowsSelected(event.target.checked);
+                      }}
+                      aria-label="Select all visible pending rows"
+                      disabled={visiblePendingRows.length === 0 || isParsingZip || isMutating || isSendingAll}
+                    />
+                  </th>
+                  <th>Account Key</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>PDF</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map((item) => {
+                  const { row, rowId, rowSendState, lastLogStatus, reviewStatus } = item;
+                  const isRowSelected = Boolean(selectedRowIds[rowId]);
+                  const statusLabel =
+                    reviewStatus === "Sent" &&
+                    lastLogStatus?.status === "sent" &&
+                    rowSendState.send_state !== "sent"
+                      ? "Sent earlier"
+                      : reviewStatus === "Failed" &&
+                          lastLogStatus?.status === "failed" &&
+                          rowSendState.send_state !== "failed"
+                        ? "Failed earlier"
+                        : reviewStatus;
+                  const actionLabel =
+                    rowSendState.send_state === "sending"
+                      ? "Sending..."
+                      : rowSendState.send_state === "sent"
+                        ? "Sent"
+                        : rowSendState.send_state === "failed" || reviewStatus === "Failed"
+                          ? "Retry"
+                          : "Send";
+
+                  return (
+                    <tr key={rowId}>
+                      <td className="select-col">
+                        <input
+                          type="checkbox"
+                          checked={isRowSelected}
+                          onChange={(event) => {
+                            setRowSelected(rowId, event.target.checked);
+                          }}
+                          aria-label={`Select ${row.account_key}`}
+                          disabled={row.status === "Blocked" || isParsingZip || isMutating || isSendingAll}
+                        />
+                      </td>
+
+                      <td>
+                        <span className="account-key">{row.account_key}</span>
+                      </td>
+
+                      <td>
+                        <span className="account-name">{row.contact_name ?? "—"}</span>
+                      </td>
+
+                      <td>
+                        <span className="email-muted">{row.contact_email ?? "—"}</span>
+                      </td>
+
+                      <td>
                         <button
                           type="button"
-                          className="button button-primary"
-                          onClick={() => openAddContact(row.account_key)}
+                          className="button button-secondary button-sm"
+                          onClick={() => {
+                            void handleViewPdf(row);
+                          }}
                           disabled={isParsingZip || isMutating || isSendingAll}
                         >
-                          Add Contact
+                          View
                         </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      </td>
+
+                      <td>
+                        <div className="status-cell">
+                          <span
+                            className={`status-pill ${
+                              reviewStatus === "Pending"
+                                ? "status-pending"
+                                : reviewStatus === "Sent"
+                                  ? statusLabel === "Sent earlier"
+                                    ? "status-sent-earlier"
+                                    : "status-sent"
+                                  : reviewStatus === "Failed"
+                                    ? "status-failed"
+                                    : "status-blocked"
+                            }`}
+                          >
+                            {statusLabel}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td>
+                        {row.status === "Pending" ? (
+                          <div className="row-action-cell">
+                            <button
+                              type="button"
+                              className="button button-secondary button-sm"
+                              onClick={() => {
+                                void sendEmailForRow(row);
+                              }}
+                              disabled={
+                                !zipFilename ||
+                                isParsingZip ||
+                                isMutating ||
+                                isSendingAll ||
+                                rowSendState.send_state === "sending" ||
+                                rowSendState.send_state === "sent"
+                              }
+                            >
+                              {actionLabel}
+                            </button>
+                            {rowSendState.send_state === "failed" && rowSendState.send_error ? (
+                              <span className="send-error-inline">{rowSendState.send_error}</span>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="button button-primary button-sm"
+                            onClick={() => openAddContact(row.account_key)}
+                            disabled={isParsingZip || isMutating || isSendingAll}
+                          >
+                            Add contact
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
     </section>

@@ -15,7 +15,7 @@ export default function ConsoleHeader({
       <header className="console-top">
         <div>
           <h1>ALPHA-TECH X</h1>
-          <p className="subtitle">Admin-only console</p>
+          <p className="subtitle">Upload bills ZIP and send PDFs to mapped contacts</p>
         </div>
 
         <div style={{ display: "grid", gap: 10, justifyItems: "end" }}>

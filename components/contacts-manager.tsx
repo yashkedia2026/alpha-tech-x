@@ -110,9 +110,9 @@ export default function ContactsManager({ initialContacts }: ContactsManagerProp
     });
   };
 
-  const handleDelete = (accountKey: string) => {
+  const handleDelete = (contact: Contact) => {
     const confirmed = window.confirm(
-      `Delete contact for account key "${accountKey}"?`
+      `Delete this contact?\n\nAccount Key: ${contact.account_key}\nEmail: ${contact.email}`
     );
     if (!confirmed) {
       return;
@@ -120,7 +120,7 @@ export default function ContactsManager({ initialContacts }: ContactsManagerProp
 
     setErrorText("");
     startTransition(async () => {
-      const result = await deleteContact(accountKey);
+      const result = await deleteContact(contact.account_key);
       if (!result.ok) {
         setErrorText(result.error);
         return;
@@ -292,7 +292,7 @@ export default function ContactsManager({ initialContacts }: ContactsManagerProp
                     <div className="row-actions">
                       <button
                         type="button"
-                        className="button button-secondary"
+                        className="button button-secondary button-sm"
                         onClick={() => openEditForm(contact)}
                         disabled={isPending}
                       >
@@ -300,8 +300,8 @@ export default function ContactsManager({ initialContacts }: ContactsManagerProp
                       </button>
                       <button
                         type="button"
-                        className="button button-danger"
-                        onClick={() => handleDelete(contact.account_key)}
+                        className="button button-danger button-sm"
+                        onClick={() => handleDelete(contact)}
                         disabled={isPending}
                       >
                         Delete
