@@ -68,6 +68,47 @@ function wrapBase64Lines(value: string): string {
   return value.replace(/.{1,76}/g, "$&\r\n").trimEnd();
 }
 
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function formatAsDdMmYyyy(date: Date): string {
+  return `${pad2(date.getDate())}-${pad2(date.getMonth() + 1)}-${date.getFullYear()}`;
+}
+
+function formatDateForSubject(value: string | null): string {
+  const normalized = String(value ?? "").trim();
+
+  const ymdMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymdMatch) {
+    return `${ymdMatch[3]}-${ymdMatch[2]}-${ymdMatch[1]}`;
+  }
+
+  const dmyMatch = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (dmyMatch) {
+    return normalized;
+  }
+
+  const ymdSlashMatch = normalized.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  if (ymdSlashMatch) {
+    return `${ymdSlashMatch[3]}-${ymdSlashMatch[2]}-${ymdSlashMatch[1]}`;
+  }
+
+  const dmySlashMatch = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (dmySlashMatch) {
+    return `${dmySlashMatch[1]}-${dmySlashMatch[2]}-${dmySlashMatch[3]}`;
+  }
+
+  if (normalized) {
+    const parsed = new Date(normalized);
+    if (!Number.isNaN(parsed.getTime())) {
+      return formatAsDdMmYyyy(parsed);
+    }
+  }
+
+  return formatAsDdMmYyyy(new Date());
+}
+
 function base64UrlEncode(value: string): string {
   return Buffer.from(value)
     .toString("base64")
@@ -254,9 +295,9 @@ export async function POST(request: Request) {
   }
 
   const toAddress = toName ? `"${toName.replace(/"/g, "")}" <${toEmail}>` : toEmail;
-  const referenceDate = tradeDate ?? "date";
-  const subject = "Learn Unlearn Relearn";
-  const text = `Hi\n\nPFA ref for '${referenceDate}' below.`;
+  const formattedDate = formatDateForSubject(tradeDate);
+  const subject = `Learn Unlearn Relearn "${formattedDate}"`;
+  const text = "Hi\n\nPFA ref for below.";
 
   try {
     const { gmail } = getGmailClient();
