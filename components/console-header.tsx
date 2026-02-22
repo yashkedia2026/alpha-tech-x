@@ -14,7 +14,7 @@ export default function ConsoleHeader({
     <>
       <header className="console-top">
         <div>
-          <h1>ALPHA-TECH X</h1>
+          <h1>Tech X Edu</h1>
           <p className="subtitle">Upload bills ZIP and send PDFs to mapped contacts</p>
         </div>
 

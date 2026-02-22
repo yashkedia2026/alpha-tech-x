@@ -23,26 +23,24 @@ export async function middleware(request: NextRequest) {
   const isCallbackRoute = pathname === "/auth/callback";
   const isAccessDeniedRoute = pathname === "/access-denied";
   const isAdminRoute = pathname === "/" || pathname.startsWith("/contacts");
+  const { supabase, response } = createClient(request);
 
+  // Let callback pass; auth code exchange and cookie writes happen in the route handler.
   if (isCallbackRoute) {
-    return NextResponse.next();
+    return response;
   }
 
-  const { supabase, response } = createClient(request);
   const {
-    data: claimsData,
-    error: claimsError
-  } = await supabase.auth.getClaims();
-  const isAuthenticated = Boolean(!claimsError && claimsData?.claims);
+    data: { user },
+    error: userError
+  } = await supabase.auth.getUser();
+  const isAuthenticated = Boolean(user && !userError);
 
   if (isLoginRoute) {
     if (!isAuthenticated) {
       return response;
     }
 
-    const {
-      data: { user }
-    } = await supabase.auth.getUser();
     const userEmail = user?.email ?? null;
     const profile = await getProfileForAuthUser(supabase, user?.id);
     const isAdmin = hasAdminAccess(userEmail, profile.role);
@@ -56,9 +54,6 @@ export async function middleware(request: NextRequest) {
     return redirectWithCookies(request, "/login", response);
   }
 
-  const {
-    data: { user }
-  } = await supabase.auth.getUser();
   const userEmail = user?.email ?? null;
   const profile = await getProfileForAuthUser(supabase, user?.id);
   const isAdmin = hasAdminAccess(userEmail, profile.role);
