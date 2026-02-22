@@ -254,10 +254,9 @@ export async function POST(request: Request) {
   }
 
   const toAddress = toName ? `"${toName.replace(/"/g, "")}" <${toEmail}>` : toEmail;
-  const subject = `Bill ${accountKey}${tradeDate ? ` ${tradeDate}` : ""}`;
-  const text = `Hi ${toName ?? accountKey},\n\nAttached is your bill${
-    tradeDate ? ` for ${tradeDate}` : ""
-  }.\n\n— ALPHA-TECH X`;
+  const referenceDate = tradeDate ?? "date";
+  const subject = "Learn Unlearn Relearn";
+  const text = `Hi\n\nPFA ref for '${referenceDate}' below.`;
 
   try {
     const { gmail } = getGmailClient();

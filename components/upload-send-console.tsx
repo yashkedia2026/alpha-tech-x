@@ -62,11 +62,11 @@ function isPdf(filename: string): boolean {
   return filename.toLowerCase().endsWith(".pdf");
 }
 
-function isIgnoredAdminPdf(filename: string): boolean {
+function isAdminPdf(filename: string): boolean {
   const baseName = getBaseName(filename);
   return (
-    baseName.startsWith("Bill_Admin_") ||
-    baseName.startsWith("Summary_Admin_Closing_Adjustment_")
+    baseName.startsWith("Bill_Admin") ||
+    baseName.startsWith("Summary_Admin")
   );
 }
 
@@ -108,11 +108,30 @@ function parseFallbackRows(zip: JSZip): ParsedBillRow[] {
 
     const baseName = getBaseName(file.name);
 
-    if (!baseName.startsWith("Bill_")) {
+    const isBillPdf = baseName.startsWith("Bill_");
+    const isSummaryAdminPdf = baseName.startsWith("Summary_Admin");
+    if (!isBillPdf && !isSummaryAdminPdf) {
       continue;
     }
 
-    if (!isPdf(baseName) || isIgnoredAdminPdf(baseName)) {
+    if (!isPdf(baseName)) {
+      continue;
+    }
+
+    if (isSummaryAdminPdf) {
+      const withoutExtension = baseName.slice(0, -".pdf".length);
+      const lastUnderscoreIndex = withoutExtension.lastIndexOf("_");
+      const tradeDate =
+        lastUnderscoreIndex > 0
+          ? withoutExtension.slice(lastUnderscoreIndex + 1).trim() || null
+          : null;
+
+      rows.push({
+        account_key: "Admin",
+        pdf_filename: baseName,
+        zip_entry_path: file.name,
+        trade_date: tradeDate
+      });
       continue;
     }
 
@@ -173,6 +192,43 @@ function findPdfEntry(zip: JSZip, row: BillRow): JSZipObject | null {
 
 function getRowId(row: BillRow): string {
   return `${row.account_key}::${row.zip_entry_path}::${row.pdf_filename}`;
+}
+
+function getDisplayAccountKey(row: BillRow): string {
+  const baseName = getBaseName(row.pdf_filename);
+
+  if (row.account_key !== "Admin") {
+    return row.account_key;
+  }
+
+  if (baseName.startsWith("Bill_Admin")) {
+    return "Admin Bill";
+  }
+
+  if (baseName.startsWith("Summary_Admin")) {
+    return "Admin Summary";
+  }
+
+  return "Admin";
+}
+
+function getDisplayName(row: BillRow): string {
+  if (row.contact_name) {
+    return row.contact_name;
+  }
+
+  const baseName = getBaseName(row.pdf_filename);
+  if (row.account_key === "Admin") {
+    if (baseName.startsWith("Bill_Admin")) {
+      return "Admin bill PDF";
+    }
+
+    if (baseName.startsWith("Summary_Admin")) {
+      return "Admin summary PDF";
+    }
+  }
+
+  return "—";
 }
 
 function getDefaultSendState(): RowSendState {
@@ -342,8 +398,10 @@ export default function UploadSendConsole() {
 
       return (
         item.row.account_key.toLowerCase().includes(normalizedSearch) ||
-        (item.row.contact_name ?? "").toLowerCase().includes(normalizedSearch) ||
-        (item.row.contact_email ?? "").toLowerCase().includes(normalizedSearch)
+        getDisplayAccountKey(item.row).toLowerCase().includes(normalizedSearch) ||
+        getDisplayName(item.row).toLowerCase().includes(normalizedSearch) ||
+        (item.row.contact_email ?? "").toLowerCase().includes(normalizedSearch) ||
+        item.row.pdf_filename.toLowerCase().includes(normalizedSearch)
       );
     });
   }, [rowsWithReviewStatus, showOnlyPending, activeFilter, searchTerm]);
@@ -420,7 +478,7 @@ export default function UploadSendConsole() {
               return [];
             }
 
-            if (!isPdf(pdfPath) || isIgnoredAdminPdf(pdfPath)) {
+            if (!isPdf(pdfPath)) {
               return [];
             }
 
@@ -441,6 +499,18 @@ export default function UploadSendConsole() {
       if (source !== "manifest") {
         source = "fallback";
         parsedRows = parseFallbackRows(zip);
+      } else {
+        const adminRows = parseFallbackRows(zip).filter((row) =>
+          isAdminPdf(row.pdf_filename)
+        );
+        if (adminRows.length > 0) {
+          const existingPaths = new Set(parsedRows.map((row) => row.zip_entry_path));
+          for (const row of adminRows) {
+            if (!existingPaths.has(row.zip_entry_path)) {
+              parsedRows.push(row);
+            }
+          }
+        }
       }
 
       if (parsedRows.length === 0) {
@@ -1232,17 +1302,17 @@ export default function UploadSendConsole() {
                           onChange={(event) => {
                             setRowSelected(rowId, event.target.checked);
                           }}
-                          aria-label={`Select ${row.account_key}`}
+                          aria-label={`Select ${getDisplayAccountKey(row)}`}
                           disabled={row.status === "Blocked" || isParsingZip || isMutating || isSendingAll}
                         />
                       </td>
 
                       <td>
-                        <span className="account-key">{row.account_key}</span>
+                        <span className="account-key">{getDisplayAccountKey(row)}</span>
                       </td>
 
                       <td>
-                        <span className="account-name">{row.contact_name ?? "—"}</span>
+                        <span className="account-name">{getDisplayName(row)}</span>
                       </td>
 
                       <td>
