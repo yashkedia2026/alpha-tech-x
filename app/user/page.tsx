@@ -28,7 +28,7 @@ export default async function UserPage() {
   return (
     <main className="console-shell">
       <section className="console">
-        <h1>Tech X Edu — User Portal (Coming Soon)</h1>
+        <h1>ALPHA-TECH X — User Portal (Coming Soon)</h1>
         <p className="subtitle">Authenticated user area</p>
 
         <div className="placeholder-box">

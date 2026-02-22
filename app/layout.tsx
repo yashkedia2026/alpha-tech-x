@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Tech X Edu",
-  description: "Tech X Edu Admin Portal"
+  title: "ALPHA-TECH X",
+  description: "ALPHA-TECH X Admin Portal"
 };
 
 export default function RootLayout({

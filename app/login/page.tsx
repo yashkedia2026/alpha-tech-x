@@ -23,7 +23,7 @@ export default async function LoginPage() {
   return (
     <main className="page-shell">
       <section className="card">
-        <h1>Tech X Edu</h1>
+        <h1>ALPHA-TECH X</h1>
         <p className="subtitle">Admin portal</p>
         <LoginForm />
       </section>
